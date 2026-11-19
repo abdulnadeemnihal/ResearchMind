@@ -1,0 +1,17 @@
+# Python virtual environment and generated files
+backend/venv/*
+!backend/venv/main.py
+!backend/venv/.gitignore
+backend/__pycache__/
+**/__pycache__/
+*.py[cod]
+
+# Local ChromaDB data
+backend/chroma_db/
+
+# Local environment and editor files
+.env
+.env.*
+!.env.example
+.vscode/*
+!.vscode/settings.json
