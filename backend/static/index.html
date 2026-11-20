@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ResearchMind AI</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; }
+    body { margin: 0; background: #10131a; color: #edf1f7; }
+    main { max-width: 980px; margin: auto; padding: 24px; }
+    h1 { margin-top: 0; }
+    .panel { border: 1px solid #303849; border-radius: 10px; padding: 16px; margin: 14px 0; background: #171c26; }
+    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    input[type="text"] { flex: 1; min-width: 240px; }
+    input, button { border-radius: 7px; border: 1px solid #465064; padding: 9px 11px; background: #202736; color: inherit; }
+    button { cursor: pointer; }
+    button:hover { background: #2a3447; }
+    pre { white-space: pre-wrap; line-height: 1.45; }
+    .doc { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid #303849; }
+    #status { color: #aab6ca; min-height: 20px; }
+    .suggestion-tabs { display: flex; gap: 8px; margin: 10px 0; overflow-x: auto; padding-bottom: 4px; }
+    .suggestion-tab { white-space: nowrap; }
+    .suggestion-tab.active { border-color: #91a9ff; background: #34456b; }
+    .suggestion-list { display: flex; flex-direction: column; gap: 8px; }
+    .suggestion-list button { text-align: left; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>ResearchMind AI</h1>
+    <section class="panel">
+      <h2>Upload PDF</h2>
+      <div class="row">
+        <input id="file" type="file" accept="application/pdf">
+        <button id="upload">Upload</button>
+      </div>
+      <div id="status"></div>
+    </section>
+    <section class="panel">
+      <h2>Documents</h2>
+      <div id="documents"></div>
+    </section>
+    <section class="panel">
+      <h2>Ask</h2>
+      <div class="row">
+        <input id="question" type="text" placeholder="Ask a grounded question...">
+        <button id="ask">Ask</button>
+      </div>
+      <div id="suggestions" style="margin-top: 10px;"></div>
+      <pre id="answer"></pre>
+    </section>
+  </main>
+  <script>
+    const statusEl = document.getElementById("status");
+    let activeDocId = null;
+    const suggestionCache = new Map();
+
+    async function refreshDocuments() {
+      const response = await fetch("/documents");
+      const docs = await response.json();
+      const host = document.getElementById("documents");
+      host.replaceChildren();
+      if (!docs.length) {
+        host.textContent = "No documents uploaded.";
+        renderSuggestionSlides([]);
+        return;
+      }
+      for (const doc of docs) {
+        const row = document.createElement("div");
+        row.className = "doc";
+        const label = document.createElement("span");
+        label.textContent = `${doc.filename} — ${doc.chunks} chunks, page ${doc.last_page}`;
+        const remove = document.createElement("button");
+        remove.textContent = "Delete";
+        remove.onclick = async () => {
+          await fetch(`/documents/${encodeURIComponent(doc.doc_id)}`, {method: "DELETE"});
+          suggestionCache.delete(doc.doc_id);
+          if (activeDocId === doc.doc_id) activeDocId = null;
+          await refreshDocuments();
+        };
+        row.append(label, remove);
+        host.append(row);
+      }
+      if (!activeDocId || !docs.some(doc => doc.doc_id === activeDocId)) {
+        activeDocId = docs[0].doc_id;
+      }
+      await renderSuggestionSlides(docs);
+    }
+
+    async function generateSuggestions(doc) {
+      if (suggestionCache.has(doc.doc_id)) return suggestionCache.get(doc.doc_id);
+      try {
+        const response = await fetch("/suggested-questions", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({doc_id: doc.doc_id})
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || "Could not generate questions");
+        suggestionCache.set(doc.doc_id, data.questions);
+        return data.questions;
+      } catch (error) {
+        return {error: error.message};
+      }
+    }
+
+    async function renderSuggestionSlides(docs) {
+      const host = document.getElementById("suggestions");
+      host.replaceChildren();
+      if (!docs.length) {
+        host.textContent = "Upload a PDF to generate questions.";
+        return;
+      }
+
+      const tabs = document.createElement("div");
+      tabs.className = "suggestion-tabs";
+      host.append(tabs);
+
+      for (const doc of docs) {
+        const tab = document.createElement("button");
+        tab.className = "suggestion-tab";
+        tab.textContent = doc.filename;
+        tab.onclick = () => {
+          activeDocId = doc.doc_id;
+          renderSuggestionSlides(docs);
+        };
+        if (doc.doc_id === activeDocId) tab.classList.add("active");
+        tabs.append(tab);
+      }
+
+      const doc = docs.find(item => item.doc_id === activeDocId) || docs[0];
+      const list = document.createElement("div");
+      list.className = "suggestion-list";
+      list.dataset.docId = doc.doc_id;
+      list.textContent = "Generating PDF-specific questions...";
+      host.append(list);
+
+      const questions = await generateSuggestions(doc);
+      if (activeDocId !== doc.doc_id || list.dataset.docId !== activeDocId) return;
+      list.replaceChildren();
+      if (questions.error) {
+        const message = document.createElement("div");
+        message.textContent = questions.error;
+        const retry = document.createElement("button");
+        retry.textContent = "Try generating again";
+        retry.onclick = () => renderSuggestionSlides(docs);
+        list.append(message, retry);
+        return;
+      }
+      for (const item of questions) {
+        const button = document.createElement("button");
+        button.textContent = item.question;
+        button.onclick = () => {
+          document.getElementById("question").value = item.question;
+          document.getElementById("ask").click();
+        };
+        list.append(button);
+      }
+    }
+    document.getElementById("upload").onclick = async () => {
+      const file = document.getElementById("file").files[0];
+      if (!file) return statusEl.textContent = "Choose a PDF first.";
+      statusEl.textContent = "Uploading and indexing...";
+      const body = new FormData();
+      body.append("file", file);
+      try {
+        const response = await fetch("/documents", {method: "POST", body});
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || "Upload failed");
+        statusEl.textContent = `Indexed ${data.chunks} chunks from ${data.pages} pages.`;
+        activeDocId = data.doc_id;
+        await refreshDocuments();
+      } catch (error) {
+        statusEl.textContent = error.message;
+      }
+    };
+    document.getElementById("ask").onclick = async () => {
+      const question = document.getElementById("question").value.trim();
+      if (!question) return;
+      const answer = document.getElementById("answer");
+      answer.textContent = "";
+      const response = await fetch("/ask", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({question, doc_id: activeDocId})
+      });
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      while (true) {
+        const {done, value} = await reader.read();
+        if (done) break;
+        answer.textContent += decoder.decode(value, {stream: true});
+      }
+    };
+    refreshDocuments();
+  </script>
+</body>
+</html>
